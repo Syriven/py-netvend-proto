@@ -60,7 +60,7 @@ class NetvendResponseError(BaseException):
     def __str__(self):
         return self.response['error_code']+": "+self.response['error_info']
 
-class NetvendCore(object):
+class AgentCore(object):
     '''Base class providing a skeleton framework. This should be stable.'''
     def __init__(self, private, url=NETVEND_URL, seed=False):
         if seed:
@@ -83,7 +83,7 @@ class NetvendCore(object):
         return self.raw_signed_command(command, self.sign_command(command))
     
 
-class NetvendBasic(NetvendCore):
+class AgentBasic(AgentCore):
     '''Class providing increased functionality (functions for all command types and afunction to make server output nicer). This should be stable.'''
     def post_process(self, data):
         try:
@@ -119,7 +119,7 @@ class NetvendBasic(NetvendCore):
         return return_dict
     
     def raw_signed_command(self, command, signed):
-        return self.post_process(NetvendCore.raw_signed_command(self, command, signed))
+        return self.post_process(AgentCore.raw_signed_command(self, command, signed))
         
     def post(self, data):
         return self.raw_command(json.dumps(['p', data], separators=(',',':')))
@@ -134,11 +134,11 @@ class NetvendBasic(NetvendCore):
     def withdraw(self, amount):
         return self.raw_command(json.dumps(['w', amount], separators=(',',':')))
 
-class NetvendExtended(NetvendBasic):
+class AgentExtended(AgentBasic):
     '''NetVendCore - Less stable functionality. Experimental, may change at any time.'''
     
     def fetchBalance(self):
         query = "SELECT balance FROM accounts WHERE address = '" + self.get_address() + "'"
-        return int(self.query(query, 3000)['command_response']['rows'][0][0])
+        return int(self.query(query, 3000)['command_result']['rows'][0][0])
 
-Netvend = NetvendExtended
+Agent = AgentExtended
