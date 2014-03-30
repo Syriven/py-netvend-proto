@@ -139,6 +139,6 @@ class NetvendExtended(NetvendBasic):
     
     def fetchBalance(self):
         query = "SELECT balance FROM accounts WHERE address = '" + self.get_address() + "'"
-        return self.query(query, 3000)['command_response']['rows'][0][0]
+        return int(self.query(query, 3000)['command_response']['rows'][0][0])
 
 Netvend = NetvendExtended
