@@ -34,10 +34,12 @@ This project follows The Semantic Versioning 2.0.0 Specification as defined at
 http://semver.org/.
 """
 
-NETVEND_URL = "http://ec2-54-213-176-154.us-west-2.compute.amazonaws.com/command.php"
+import sys
 
-import json
-import hashlib
+if sys.hexversion < 0x02000000 or  sys.hexversion >= 0x03000000:
+    raise "netvend requires Python 2.x."
+
+import json, pybitcointools
 try:
     import urllib, urllib2
     urlopen = urllib2.urlopen
@@ -47,11 +49,8 @@ except ImportError:
     urlopen = urllib.request.urlopen
     import urllib.parse
     urlencode = urllib.parse.urlencode
-    
-try:
-    import pybitcointools
-except ImportError:
-    raise ImportError('Download http://git.io/BTNMqw and rename it pybitcointools.py')
+
+NETVEND_URL = "http://ec2-54-213-176-154.us-west-2.compute.amazonaws.com/command.php"
 
 class NetvendResponseError(BaseException):
     def __init__(self, response):
