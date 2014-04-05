@@ -34,10 +34,10 @@ This project follows The Semantic Versioning 2.0.0 Specification as defined at
 http://semver.org/.
 """
 
-import sys
+import sys, thread
 
 if sys.hexversion < 0x02000000 or  sys.hexversion >= 0x03000000:
-    raise "netvend requires Python 2.x."
+    raise RuntimeError("netvend requires Python 2.x.")
 
 import json, pybitcointools
 try:
@@ -65,7 +65,11 @@ class AgentCore(object):
         if seed:
             self._private = pybitcointools.sha256(private)
         else:
-            self._private = pybitcointools.b58check_to_hex(private)
+            try:
+                self._private = pybitcointools.b58check_to_hex(private)
+            except AssertionError:
+                raise RuntimeError("Invalid private key. Did you mean to set seed=True?")
+
         self.address = pybitcointools.pubkey_to_address(pybitcointools.privtopub(self._private))
         self.url = url
     
@@ -74,16 +78,24 @@ class AgentCore(object):
     
     def sign_command(self, command):
         return pybitcointools.ecdsa_sign(command, self._private)
-    
-    def raw_signed_command(self, command, signed):
-        return urlopen(self.url, urlencode({'address': self.get_address(), 'command' : command, 'signed' : signed})).read()
+
+    def send_command(self, command, sig):
+        return urlopen(self.url, urlencode({'address': self.get_address(), 'command' : command, 'signed' : sig})).read()
         
-    def raw_command(self, command):
-        return self.raw_signed_command(command, self.sign_command(command))
+    def sign_and_send_command(self, command):
+        sig = self.sign_command(command)
+        return self.send_command(command, sig)
     
 
 class AgentBasic(AgentCore):
     '''Class providing increased functionality (functions for all command types and afunction to make server output nicer). This should be stable.'''
+    def __init__(self, private, url=NETVEND_URL, seed=False):
+        AgentCore.__init__(self, private, url, seed)
+        self.max_query_fee = 3000
+
+    def set_max_query_fee(self, fee):
+        self.max_query_fee = fee
+
     def post_process(self, data):
         try:
             data = json.loads(data)
@@ -108,36 +120,47 @@ class AgentBasic(AgentCore):
                     command_result['rows'] = raw_command_result[2]
                     command_result['field_types'] = raw_command_result[3]
                 else:
-                    fees = {'base' : raw_command_result[1][0],
-                            'time' : raw_command_result[1][1],
-                            'size' : raw_command_result[1][2],
-                            'total' : raw_command_result[1][3]
+                    fees = {'base': raw_command_result[1][0],
+                            'time': raw_command_result[1][1],
+                            'size': raw_command_result[1][2],
+                            'total': raw_command_result[1][3]
                             }
                     command_result['fees'] = fees
             return_dict['command_result'] = command_result
         return return_dict
     
-    def raw_signed_command(self, command, signed):
-        return self.post_process(AgentCore.raw_signed_command(self, command, signed))
+    #def send_signed_command(self, command, signed):
+    #    return self.post_process(AgentCore.send_signed_command(self, command, signed))
+
+    def handle_command_asynch(self, command, callback):
+        server_response = self.sign_and_send_command(command)
+        callback(self.post_process(server_response))
+
+    def handle_command(self, command, callback):
+        if callback is None:
+            return self.post_process(self.sign_and_send_command(command))
+        else:
+            thread.start_new_thread(self.handle_command_asynch, (command, callback))
         
-    def post(self, data):
-        return self.raw_command(json.dumps(['p', data], separators=(',',':')))
+    def post(self, data, callback=None):
+        return self.handle_command(json.dumps(['p', data], separators=(',',':')), callback)
+
+    def tip(self, address, amount, data_id, callback=None):
+        if data_id == None:
+            data_id = 0
+        return self.handle_command(json.dumps(['t', address, amount, data_id], separators=(',',':')), callback)
     
-    def tip(self, address, amount, data_id):
-        #if type(address) == type(NetVendCore)
-        return self.raw_command(json.dumps(['t', address, amount, data_id], separators=(',',':')))
+    def query(self, sql, callback=None):
+        return self.handle_command(json.dumps(['q', sql, self.max_query_fee], separators=(',',':')), callback)
     
-    def query(self, sql, max_fee):
-        return self.raw_command(json.dumps(['q', sql, max_fee], separators=(',',':')))
-    
-    def withdraw(self, amount):
-        return self.raw_command(json.dumps(['w', amount], separators=(',',':')))
+    def withdraw(self, amount, callback=None):
+        return self.handle_command(json.dumps(['w', amount], separators=(',',':')), callback)
 
 class AgentExtended(AgentBasic):
     '''NetVendCore - Less stable functionality. Experimental, may change at any time.'''
     
     def fetchBalance(self):
         query = "SELECT balance FROM accounts WHERE address = '" + self.get_address() + "'"
-        return int(self.query(query, 3000)['command_result']['rows'][0][0])
+        return int(self.query(query)['command_result']['rows'][0][0])
 
 Agent = AgentExtended
