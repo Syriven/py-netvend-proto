@@ -79,7 +79,7 @@ class NetvendResponseError(BaseException):
         self.response = response
 
     def __str__(self):
-        return self.response['error_code']+": "+self.response['error_info']
+        return str(self.response['error_code'])+": "+str(self.response['error_info'])
 
 
 class AgentCore(object):
