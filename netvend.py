@@ -1,40 +1,25 @@
 """
-NetVendAPI - An API for NetVend written by @BardiHarborow and Syriven.
+py-netvend - A Python API for netvend written by @BardiHarborow and Syriven.
 
-This module is split into three parts:
-    * NetVendCore (signing and sending commands)
-    * NetVendBasic (formatting commands and parsing the server responses)
-    * NetVendExtended (additional convenience methods).
+This module centers around the Agent class, which is split into three parts:
+    * AgentCore (signing and sending commands)
+    * AgentBasic (formatting commands and parsing the server responses)
+    * AgentExtended (additional convenience methods).
 
-NetVendCore should be the most stable. Each extension adds usability, but may be
+AgentCore should be the most stable. Each extension adds usability, but may be
 less stable.
 
-NetVend is an alias for the current class we consider stable (NetVendBasic, at 
-the moment) and should be used in most programs. We'd rather you get an error
-than lose a chunk of BTC.
-
-The code should be mostly self-explanatary. Note that raw_signed_command in
-NetVendBasic is not a bug; read the code a couple of times *before* you file a
-bug report.
-
-If you\'re cashed up and would like to spread some love, send a few bitcents our
-way =)
+Agent is an alias for the current class we consider stable (AgentExtended, at 
+the moment).
 
 Created by:
 @Syriven (1MphZghyHmmrzJUk316iHvZ55UthfHXR34) and;
 @BardiHarborow (1Bardi4eoUvJomBEtVoxPcP8VK26E3Ayxn)
 
-Special Thanks to /u/minisat_maker on reddit for the orginal concept for NetVend.
-
-Copyright (c) Bardi Harborow and @Syriven 2013.
-Licensed under the Creative Commons Attribution 3.0 Unported License.
-Grab a copy at http://creativecommons.org/licenses/by/3.0/
-
-This project follows The Semantic Versioning 2.0.0 Specification as defined at
-http://semver.org/.
+Special Thanks to /u/minisat_maker on reddit for the orginal concept for netvend.
 """
 
-import sys, thread
+import sys, thread, math
 
 if sys.hexversion < 0x02000000 or  sys.hexversion >= 0x03000000:
     raise RuntimeError("netvend requires Python 2.x.")
@@ -52,12 +37,50 @@ except ImportError:
 
 NETVEND_URL = "http://ec2-54-213-176-154.us-west-2.compute.amazonaws.com/command.php"
 
+def unit_pow(unit):
+    if unit.lower().startswith("usat"):
+        return 0
+    elif unit.lower().startswith("msat"):
+        return 3
+    elif unit.lower().startswith("sat"):
+        return 6
+    elif unit.lower() == "ubtc" or unit.lower() == "ubit":
+        return 8
+    elif unit.lower() == "mbtc" or unit.lower() == "mbit":
+        return 11
+    elif unit.lower() == "btc":
+        return 14
+    else:
+        raise ValueError("cannot recognize unit")
+
+def convert_value(amount, from_unit, to_unit):
+    from_pow = unit_pow(from_unit)
+    to_pow = unit_pow(to_unit)
+
+    uSats = amount * math.pow(10, from_pow)
+    return uSats / math.pow(10, to_pow)
+
+def format_value(uSats):
+    if uSats > math.pow(10, 13):
+        return (convert_value(uSats, 'usat', 'btc'), 'BTC')
+    elif uSats > math.pow(10, 10):
+        return (convert_value(uSats, 'usat', 'mbtc'), 'mBTC')
+    elif uSats > math.pow(10, 7):
+        return (convert_value(uSats, 'usat', 'ubtc'), 'uBTC')
+    elif uSats > math.pow(10, 5):
+        return (convert_value(uSats, 'usat', 'sat'), 'sat')
+    elif uSats > math.pow(10, 2):
+        return (convert_value(uSats, 'usat', 'msat'), 'mSat')
+    else:
+        return (convert_value(uSats, 'usat', 'usat'), 'uSat')
+
 class NetvendResponseError(BaseException):
     def __init__(self, response):
         self.response = response
 
     def __str__(self):
         return self.response['error_code']+": "+self.response['error_info']
+
 
 class AgentCore(object):
     '''Base class providing a skeleton framework. This should be stable.'''
@@ -128,11 +151,10 @@ class AgentBasic(AgentCore):
                     command_result['fees'] = fees
             return_dict['command_result'] = command_result
         return return_dict
-    
-    #def send_signed_command(self, command, signed):
-    #    return self.post_process(AgentCore.send_signed_command(self, command, signed))
 
     def handle_command_asynch(self, command, callback):
+        if not callable(callback):
+            raise TypeError("can't use type " + type(callback) + " as a callback.")
         server_response = self.sign_and_send_command(command)
         callback(self.post_process(server_response))
 
@@ -159,8 +181,11 @@ class AgentBasic(AgentCore):
 class AgentExtended(AgentBasic):
     '''NetVendCore - Less stable functionality. Experimental, may change at any time.'''
     
-    def fetchBalance(self):
+    def fetch_balance(self):
         query = "SELECT balance FROM accounts WHERE address = '" + self.get_address() + "'"
-        return int(self.query(query)['command_result']['rows'][0][0])
+        response = self.query(query)
+        balance = int(response['command_result']['rows'][0][0])
+        balance -= response['charged']
+        return balance
 
 Agent = AgentExtended
