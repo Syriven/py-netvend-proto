@@ -129,6 +129,7 @@ class AgentBasic(AgentCore):
         if not return_dict['success']:
             return_dict['error_code'] = data[1]
             return_dict['error_info'] = data[2]
+            raise NetvendResponseError(return_dict)
         else:
             return_dict['history_id'] = data[1]
             return_dict['charged'] = data[2]
