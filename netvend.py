@@ -2,14 +2,14 @@
 py-netvend - A Python API for netvend written by @BardiHarborow and Syriven.
 
 This module centers around the Agent class, which is split into three parts:
-    * AgentCore (signing and sending commands)
-    * AgentBasic (formatting commands and parsing the server responses)
-    * AgentExtended (additional convenience methods).
+* AgentCore (signing and sending commands)
+* AgentBasic (formatting commands and parsing the server responses)
+* AgentExtended (additional convenience methods).
 
 AgentCore should be the most stable. Each extension adds usability, but may be
 less stable.
 
-Agent is an alias for the current class we consider stable (AgentExtended, at 
+Agent is an alias for the current class we consider stable (AgentExtended, at
 the moment).
 
 Created by:
@@ -21,7 +21,7 @@ Special Thanks to /u/minisat_maker on reddit for the orginal concept for netvend
 
 import sys, thread, math
 
-if sys.hexversion < 0x02000000 or  sys.hexversion >= 0x03000000:
+if sys.hexversion < 0x02000000 or sys.hexversion >= 0x03000000:
     raise RuntimeError("netvend requires Python 2.x.")
 
 import json, pybitcointools
@@ -36,6 +36,7 @@ except ImportError:
     urlencode = urllib.parse.urlencode
 
 NETVEND_URL = "http://ec2-54-213-176-154.us-west-2.compute.amazonaws.com/command.php"
+NETVEND_VERSION = "0_1"
 
 def unit_pow(unit):
     if unit.lower().startswith("usat"):
@@ -103,7 +104,7 @@ class AgentCore(object):
         return pybitcointools.ecdsa_sign(command, self._private)
 
     def send_command(self, command, sig):
-        return urlopen(self.url, urlencode({'address': self.get_address(), 'command' : command, 'signed' : sig})).read()
+        return urlopen(self.url, urlencode({'address': self.get_address(), 'command' : command, 'signed' : sig, "version" : NETVEND_VERSION})).read()
         
     def sign_and_send_command(self, command):
         sig = self.sign_command(command)
