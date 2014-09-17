@@ -188,7 +188,7 @@ class WithdrawBatchResult(BatchResult):
         
 class BatchResultList(object):
     def __init__(self, responses, batch_types):
-        pprint.pprint(responses)
+        #pprint.pprint(responses)
         self.results = []
         
         for i in range(len(responses)):
