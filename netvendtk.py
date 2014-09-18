@@ -153,28 +153,33 @@ class AgentCore(object):
 
 
 class BatchResult(object):
-    def __init__(self, history_id, charged):
+    def __init__(self, history_id, charged, size):
         self.history_id = history_id
         self.charged = charged
+        self.size = size
 
 
 class PostBatchResult(BatchResult):
-    def __init__(self, response):
+    def __init__(self, response, size):
         self.first_post_id = response[0]
         
-        BatchResult.__init__(self, response[1], response[2])
+        BatchResult.__init__(self, response[1], response[2], size)
     
     def __getitem__(self, index):
+        if index > self.size:
+            raise IndexError("post index out of batch range")
         return self.first_post_id + index
 
         
 class PulseBatchResult(BatchResult):
-    def __init__(self, response):
+    def __init__(self, response, size):
         self.first_pulse_id = response[0]
         
-        BatchResult.__init__(self, response[1], response[2])
+        BatchResult.__init__(self, response[1], response[2], size)
     
     def __getitem__(self, index):
+        if index > self.size:
+            raise IndexError("pulse index out of batch range")
         return self.first_pulse_id + index
         
 
@@ -187,37 +192,39 @@ class QueryResult(object):
 
 
 class QueryBatchResult(BatchResult):
-    def __init__(self, response):
+    def __init__(self, response, size):
         results = response[0]
         self.results = []
         for result in results:
             self.results.append(QueryResult(result))
             
-        BatchResult.__init__(self, response[1], response[2])
+        BatchResult.__init__(self, response[1], response[2], size)
     
     def __getitem__(self, index):
+        if index > self.size:
+            raise IndexError("query index out of batch range")
         return self.results[index]
 
         
 class WithdrawBatchResult(BatchResult):
-    def __init__(self, response):
-        BatchResult.__init__(self, response[1], response[2])
+    def __init__(self, response, size):
+        BatchResult.__init__(self, response[1], response[2], size)
         
         
 class BatchResultList(object):
-    def __init__(self, responses, batch_types):
+    def __init__(self, responses, batch_types, batch_sizes):
         # pprint.pprint(responses)
         self.results = []
         
         for i in range(len(responses)):
             if batch_types[i] is BATCHTYPE_POST:
-                self.results.append(PostBatchResult(responses[i][1]))
+                self.results.append(PostBatchResult(responses[i][1], batch_sizes[i]))
             elif batch_types[i] is BATCHTYPE_PULSE:
-                self.results.append(PulseBatchResult(responses[i][1]))
+                self.results.append(PulseBatchResult(responses[i][1], batch_sizes[i]))
             elif batch_types[i] is BATCHTYPE_QUERY:
-                self.results.append(QueryBatchResult(responses[i][1]))
+                self.results.append(QueryBatchResult(responses[i][1], batch_sizes[i]))
             elif batch_types[i] is BATCHTYPE_WITHDRAW:
-                self.results.append(WithdrawBatchResult(responses[i][1]))
+                self.results.append(WithdrawBatchResult(responses[i][1], batch_sizes[i]))
             else:
                 raise RuntimeError("batch_types contains an invalid value: " + str(batch_types[i]))
     
@@ -233,7 +240,7 @@ class AgentBasic(AgentCore):
         self.batch_types = []
         self.log_path = None
 
-    def post_process(self, data, batch_types):
+    def post_process(self, data, batch_types, batch_sizes):
         try:
             responses = json.loads(data)
         except ValueError:
@@ -245,7 +252,7 @@ class AgentBasic(AgentCore):
                     pickle.dump(responses, f)
             raise NetvendResponseError(len(responses)-1, responses[-1])
         
-        return BatchResultList(responses, batch_types)
+        return BatchResultList(responses, batch_types, batch_sizes)
     
     def set_log_path(self, log_path):
         self.log_path = log_path
@@ -320,10 +327,11 @@ class AgentBasic(AgentCore):
     def transmit_batches_blocking(self):
         batches = self.batches
         batch_types = self.batch_types
+        batch_sizes = [len(x) for x in batches]
         self.batches = []
         self.batch_types = []
         
-        return self.post_process(self.send_to_netvend({"batches": json.dumps(batches)}), batch_types)
+        return self.post_process(self.send_to_netvend({"batches": json.dumps(batches)}), batch_types, batch_sizes)
     
     def transmit_batches_callback(self, callback):
         if not callable(callback):
@@ -338,23 +346,23 @@ class AgentBasic(AgentCore):
         else:
             return thread.start_new_thread(self.transmit_batches_callback, (callback,))
     
-    def transmit_single_batch_blocking(self, batch_type, signed_batch):
-        result_list = self.post_process(self.send_to_netvend({"batches": json.dumps([signed_batch])}), [batch_type])
+    def transmit_single_batch_blocking(self, batch_type, signed_batch, batch_size):
+        result_list = self.post_process(self.send_to_netvend({"batches": json.dumps([signed_batch])}), [batch_type], [batch_size])
         batch_result = result_list[0]
         return batch_result
     
-    def transmit_single_batch_callback(self, batch_type, signed_batch, callback):
+    def transmit_single_batch_callback(self, batch_type, signed_batch, batch_size, callback):
         if not callable(callback):
             raise TypeError("can't use type " + type(callback) + " as a callback")
         
-        batch_result = self.transmit_single_batch_blocking(batch_type, signed_batch)
+        batch_result = self.transmit_single_batch_blocking(batch_type, signed_batch, batch_size)
         callback(batch_result)
     
-    def transmit_single_batch(self, batch_type, signed_batch, callback=None):
+    def transmit_single_batch(self, batch_type, signed_batch, batch_size, callback=None):
         if callback is None:
-            return self.transmit_single_batch_blocking(batch_type, signed_batch)
+            return self.transmit_single_batch_blocking(batch_type, signed_batch, batch_size)
         else:
-            return thread.start_new_thread(self.transmit_single_batch_callback, (batch_type, signed_batch, callback))
+            return thread.start_new_thread(self.transmit_single_batch_callback, (batch_type, signed_batch, batch_size, callback))
     
     def sign_and_transmit_single_command_blocking(self, type, command):
         batch = [type, [command]]
@@ -363,7 +371,7 @@ class AgentBasic(AgentCore):
         sig = self.sign_data(encoded_batch)
         signed_batch = [encoded_batch, sig]
         
-        batch_result = self.transmit_single_batch_blocking(type, signed_batch)
+        batch_result = self.transmit_single_batch_blocking(type, signed_batch, 1)
         
         return batch_result[0]
     
@@ -482,6 +490,7 @@ class ServiceAgent(Agent):
                 "AND pulses.value >= " + str(self.lowest_fee) + " " \
                 "AND posts.data LIKE '" + CALL_PREFIX + "%'" \
                 "ORDER BY pulses.pulse_id ASC"
+                
 
         result = self.query(query)
         if result.truncated:
@@ -493,7 +502,6 @@ class ServiceAgent(Agent):
         service_results = []
         refund_pulses = []
         for row in rows:
-            print 'Got a row ! :)'  # TODO: Remove creepy smiles
             [pulse_id, pulse_from_address, pulse_value, post_id, data] = row
             try:
                 # Get the name and args of the function, as packed by the call method
@@ -551,7 +559,6 @@ class ServiceAgent(Agent):
         post_batch_iter = self.add_post_batch([call_str])
 
         # Then use a pulse to alert service_address of our call post
-        print value
         tip_batch_iter = self.add_pulse_batch([[service_address, value, 0, post_batch_iter]])
 
         # Send the query, post, and tip batches
