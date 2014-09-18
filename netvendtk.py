@@ -19,10 +19,26 @@ Created by:
 Special Thanks to /u/minisat_maker on reddit for the orginal concept for netvend.
 """
 
-import sys, thread, math, time, pickle, pprint
+import sys
+import thread
+import math
+import time
+import pickle
+import json
+import pybitcointools
 
 if sys.hexversion < 0x02000000 or sys.hexversion >= 0x03000000:
     raise RuntimeError("netvend requires Python 2.x.")
+
+try:
+    import urllib, urllib2
+    urlopen = urllib2.urlopen
+    urlencode = urllib.urlencode
+except ImportError:
+    import urllib.request
+    urlopen = urllib.request.urlopen
+    import urllib.parse
+    urlencode = urllib.parse.urlencode
 
 NETVEND_URL = "http://ec2-54-68-165-84.us-west-2.compute.amazonaws.com/command.php"
 NETVEND_VERSION = "1_0"
@@ -39,16 +55,10 @@ BATCHTYPE_WITHDRAW = 3
 DEFAULT_QUERY_MAX_TIME_COST = 1000
 DEFAULT_QUERY_MAX_SIZE_COST = 1000
 
-import json, pybitcointools
-try:
-    import urllib, urllib2
-    urlopen = urllib2.urlopen
-    urlencode = urllib.urlencode
-except ImportError:
-    import urllib.request
-    urlopen = urllib.request.urlopen
-    import urllib.parse
-    urlencode = urllib.parse.urlencode
+LASTREAD_PREFIX = "l:"
+RETURN_PREFIX = "r:"
+CALL_PREFIX = "c:"
+
 
 def unit_pow(unit):
     if unit.lower().startswith("usat") or unit.lower().startswith("base"):
@@ -66,6 +76,7 @@ def unit_pow(unit):
     else:
         raise ValueError("cannot recognize unit")
 
+
 def convert_value(amount, from_unit, to_unit):
     from_pow = unit_pow(from_unit)
     to_pow = unit_pow(to_unit)
@@ -74,6 +85,7 @@ def convert_value(amount, from_unit, to_unit):
     if to_pow == 0:
         return int(uSats)
     return uSats / math.pow(10, to_pow)
+
 
 def format_value(uSats):
     if uSats > math.pow(10, 13):
@@ -89,8 +101,9 @@ def format_value(uSats):
     else:
         return (convert_value(uSats, 'usat', 'usat'), 'uSat')
 
+
 class NetvendResponseError(BaseException):
-    def __init__(self, batch, error_info):#message, batch, pos_in_batch, already_charged):
+    def __init__(self, batch, error_info):  # message, batch, pos_in_batch, already_charged):
         self.batch = batch
         self.message = error_info[1]
         self.pos_in_batch = error_info[2]
@@ -107,19 +120,23 @@ class NetvendResponseError(BaseException):
 
 
 class AgentCore(object):
-    '''Base class providing a skeleton framework. This should be stable.'''
+    """Base class providing a skeleton framework. This should be stable."""
     def __init__(self, private, url, privtype):
         if privtype is PRIVTYPE_SEED:
             self.private = pybitcointools.sha256(private)
-
         elif privtype is PRIVTYPE_B58CHECK:
             try:
                 self.private = pybitcointools.b58check_to_hex(private)
             except AssertionError:
-                raise RuntimeError("Invalid private key.")
-
+                raise ValueError("Invalid private key")
         elif privtype is PRIVTYPE_HEX:
-            self.private = private
+            if len(private) == 64:  # TODO: Figure out if 32 would also work (64 hex characters is 32 bytes)
+                self.private = private
+            else:
+                raise ValueError("Invalid private key")
+        else:
+            # Raise a ValueError, otherwise self.private would not be defined
+            raise ValueError("Invalid privtype")
 
         self.address = pybitcointools.pubkey_to_address(pybitcointools.privtopub(self.private))
         self.url = url
@@ -168,6 +185,7 @@ class QueryResult(object):
         self.size_cost = result[2]
         self.truncated = bool(result[3])
 
+
 class QueryBatchResult(BatchResult):
     def __init__(self, response):
         results = response[0]
@@ -188,7 +206,7 @@ class WithdrawBatchResult(BatchResult):
         
 class BatchResultList(object):
     def __init__(self, responses, batch_types):
-        #pprint.pprint(responses)
+        # pprint.pprint(responses)
         self.results = []
         
         for i in range(len(responses)):
@@ -208,7 +226,7 @@ class BatchResultList(object):
 
 
 class AgentBasic(AgentCore):
-    '''Class providing increased functionality (functions for all command types and afunction to make server output nicer). This should be stable.'''
+    """Class providing increased functionality (functions for all command types and a function to make server output nicer). This should be stable."""
     def __init__(self, private, url=NETVEND_URL, privtype=PRIVTYPE_SEED):
         AgentCore.__init__(self, private, url, privtype)
         self.batches = []
@@ -391,8 +409,9 @@ class AgentBasic(AgentCore):
         
         return self.sign_and_transmit_single_command(BATCHTYPE_WITHDRAW, withdraw, callback)
 
+
 class AgentExtended(AgentBasic):
-    '''NetVendCore - Less stable functionality. Experimental, may change at any time.'''
+    """NetVendCore - Less stable functionality. Experimental, may change at any time."""
     
     def fetch_balance(self):
         query = "SELECT balance FROM accounts WHERE address = '" + self.get_address() + "'"
@@ -405,10 +424,6 @@ class AgentExtended(AgentBasic):
 Agent = AgentExtended
 
 
-lastread_prefix = "l:"
-return_prefix = "r:"
-call_prefix = "c:"
-
 class SimpleService(object):
     def __init__(self, func, fee):
         self.func = func
@@ -417,9 +432,11 @@ class SimpleService(object):
     def call(self, args):
         return self.func(*args)
 
+
 class AdvancedService(SimpleService):
     def call(self, request_row, args):
         pass
+
 
 class ServiceAgent(Agent):
     def __init__(self, private, url=NETVEND_URL, privtype=PRIVTYPE_SEED):
@@ -440,76 +457,79 @@ class ServiceAgent(Agent):
         if len(self.simple_services) == 0:
             raise RuntimeError("Need to register services before ServiceAgent can work")
         
-        #clear any existing batches
+        # Clear any existing batches
         self.clear_batches()
     
-        #We need an inner query that fetches the tip_id our agent has served last (we will update this in a post later)
-        #the sql SUBSTRING method considers the first character position 1 (not 0), so we have to have len(lastread_prefix)+1
-        inner_query = "SELECT SUBSTRING(data, " + str(len(lastread_prefix)+1) + ", LENGTH(data)) FROM posts WHERE address = '" + self.get_address() + "' AND data LIKE '" + lastread_prefix + "%' ORDER BY post_id DESC LIMIT 1"
+        # We need an inner query that fetches the tip_id our agent has served last (we will update this in a post later)
+        # The SQL SUBSTRING method considers the first character position 1 (not 0), so we have to have len(lastread_prefix)+1
+        inner_query = "SELECT SUBSTRING(data, " + str(len(LASTREAD_PREFIX)+1) + ", LENGTH(data)) " \
+                      "FROM posts WHERE address = '" + self.get_address() + "' " \
+                      "AND data LIKE '" + LASTREAD_PREFIX + "%' " \
+                      "ORDER BY post_id DESC LIMIT 1"
 
-        #The outer query will fetch all info about any calls, checking all posts more recent than the data_id the inner query fetches
+        # The outer query will fetch all info about any calls, checking all posts more recent than the data_id the inner query fetches
         query = "SELECT " \
-                    "pulses.pulse_id, " \
-                    "pulses.from_address, " \
-                    "pulses.value, " \
-                    "pulses.post_id, " \
-                    "posts.data " \
+                "pulses.pulse_id, " \
+                "pulses.from_address, " \
+                "pulses.value, " \
+                "pulses.post_id, " \
+                "posts.data " \
                 "FROM pulses LEFT JOIN posts " \
                 "ON pulses.post_id = posts.post_id " \
                 "WHERE " \
-                        "pulses.to_address = '" + self.get_address() + "' " \
-                    "AND pulses.pulse_id > IFNULL((" + inner_query + "), 0) " \
-                    "AND pulses.value >= " + str(self.lowest_fee) + " " \
-                    "AND posts.data LIKE '" + call_prefix + "%'" \
+                "pulses.to_address = '" + self.get_address() + "' " \
+                "AND pulses.pulse_id > IFNULL((" + inner_query + "), 0) " \
+                "AND pulses.value >= " + str(self.lowest_fee) + " " \
+                "AND posts.data LIKE '" + CALL_PREFIX + "%'" \
                 "ORDER BY pulses.pulse_id ASC"
-                
 
         result = self.query(query)
         if result.truncated:
-            #not meant to be a permanent solution
+            # Not meant to be a permanent solution
+            # TODO: Implement proper solution
             raise RuntimeError("query truncated; max_size_cost too low.")
 
         rows = result.rows
         service_results = []
         refund_pulses = []
         for row in rows:
-            print 'got a row'
+            print 'Got a row ! :)'  # TODO: Remove creepy smiles
             [pulse_id, pulse_from_address, pulse_value, post_id, data] = row
             try:
-                #get the name and args of the function, as packed by the call method
-                [name, args] = json.loads(data[len(call_prefix):])
+                # Get the name and args of the function, as packed by the call method
+                [name, args] = json.loads(data[len(CALL_PREFIX):])
                 
-                #call the service's function
+                # Call the service's function
                 returned = self.simple_services[name].call(args)
 
-                #we only want to post if the function actually returns a value
+                # We only want to post if the function actually returns a value
                 if returned is not None:
-                    return_str = return_prefix + str(post_id) + ":" + json.dumps(returned)
+                    return_str = RETURN_PREFIX + str(post_id) + ":" + json.dumps(returned)
                     service_results.append(return_str)
             
             except Exception as e:
-                #if there's an error, respond with an error response and send a refund
-                return_str = return_prefix + str(post_id) + ":e:" + str(e)
+                # If there's an error, respond with an error response and send a refund
+                return_str = RETURN_PREFIX + str(post_id) + ":e:" + str(e)
                 service_results.append(return_str)
 
-                #if the refund fee (which should cover netvend fees and processing costs) is too much, don't refund.
                 refund = int(pulse_value) - self.refund_fee
+                # If the refund fee (which should cover netvend fees and processing costs) is too much, don't refund
                 if refund > 0:
-                    #tip will refer to the nth post_id in what will be batch 0, our post batch, where n is the position of the error post in the post batch.
-                    refund_pulses.append([tip_from_address, refund, len(service_results)-1, 0])
+                    # Tip will refer to the nth post_id in what will be batch 0, our post batch, where n is the position of the error post in the post batch.
+                    refund_pulses.append([pulse_from_address, refund, len(service_results)-1, 0])
         
         if len(rows) > 0:
-            #get the pulse id of the last row checked
+            # Get the pulse id of the last row checked
             last_pulse_id = rows[-1][0]
-            #post all of our responses, and post our lastread placeholder
-            post_batch_iter = self.add_post_batch(service_results + [lastread_prefix + str(last_pulse_id)])
-            #if we have any refund pulses, add those in a batch as well
+            # Post all of our responses, and post our lastread placeholder
+            post_batch_iter = self.add_post_batch(service_results + [LASTREAD_PREFIX + str(last_pulse_id)])
+            # If we have any refund pulses, add those in a batch as well
             if len(refund_pulses) > 0:
                 pulse_batch_iter = self.add_pulse_batch(refund_pulses)
             else:
                 pulse_batch_iter = None
 
-            #transmit batches, return info
+            # Transmit batches, return info
             responses = self.transmit_batches()
             post_batch_response = responses[post_batch_iter]
             
@@ -523,44 +543,44 @@ class ServiceAgent(Agent):
     def call(self, service_address, service_name, args, value, timeout = None):
         if type(args) is not list:
             raise TypeError("args must be a list")
-        #clear any existing batches
+        # Clear any existing batches
         self.clear_batches()
         
-        #first, make a post to call the service
-        call_str = call_prefix + json.dumps([service_name, args])
+        # First, make a post to call the service
+        call_str = CALL_PREFIX + json.dumps([service_name, args])
         post_batch_iter = self.add_post_batch([call_str])
 
-        #then use a pulse to alert service_address of our call post
+        # Then use a pulse to alert service_address of our call post
         print value
         tip_batch_iter = self.add_pulse_batch([[service_address, value, 0, post_batch_iter]])
 
-        #send the query, post, and tip batches
+        # Send the query, post, and tip batches
         response_list = self.transmit_batches()
         
-        #get the post_id of our request, so later we can query netvend for responses--posts that reference this post_id
+        # Get the post_id of our request, so later we can query netvend for responses--posts that reference this post_id
         post_id = response_list[post_batch_iter][0]
-        #also use the post_id as our initial value for last_post_checked_id, which is needed to check each time for *new* posts
+        # Also use the post_id as our initial value for last_post_checked_id, which is needed to check each time for *new* posts
         last_checked_post_id = post_id
 
         start_time = time.time()
         
-        #we have to get two values from netvend:
-        #new responses to our request from the service address,
-        #and the new max post_id, to know where to start looking for "new" posts next iteration
+        # We have to get two values from netvend:
+        # New responses to our request from the service address,
+        # and the new max post_id, to know where to start looking for "new" posts next iteration
         
-        #last_post_checked_query won't change, so we can define it now:
+        # Last_post_checked_query won't change, so we can define it now:
         last_post_id_query = "SELECT MAX(post_id) FROM posts"
         
         while True:
-            #the query that requests new posts changes where it searches from (last_post_checked_id),
-            #so we'll define it each loop
+            # The query that requests new posts changes where it searches from (last_post_checked_id),
+            # so we'll define it each loop
             
-            response_check_query = "SELECT data FROM posts WHERE post_id > " + str(last_checked_post_id) + " AND address = '" + service_address + "' AND data LIKE '" + return_prefix + str(post_id) + ":%' LIMIT 1"
+            response_check_query = "SELECT data FROM posts WHERE post_id > " + str(last_checked_post_id) + " AND address = '" + service_address + "' AND data LIKE '" + RETURN_PREFIX + str(post_id) + ":%' LIMIT 1"
         
-            #add a query batch with both of our queries
+            # Add a query batch with both of our queries
             self.add_query_batch([response_check_query, last_post_id_query])
             
-            #send all batches (which is just our one query batch)
+            # Send all batches (which is just our one query batch)
             responses = self.transmit_batches()
             query_batch_response = responses[0]
 
@@ -569,11 +589,11 @@ class ServiceAgent(Agent):
 
             if len(response_rows) > 0:
                 data = response_rows[0][0]
-                if data.split(':')[2]=="e":
+                if data.split(':')[2] == "e":
                     error = data.split(':')[3]
                     raise RuntimeError("Error in serving script: " + error)
                     
-                return json.loads(data[len(return_prefix)+len(str(post_id)+":"):])
+                return json.loads(data[len(RETURN_PREFIX)+len(str(post_id)+":"):])
 
             elapsed_time = time.time() - start_time
             if timeout is not None and elapsed_time > timeout:
