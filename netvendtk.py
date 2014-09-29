@@ -417,6 +417,14 @@ class AgentBasic(AgentCore):
         
         return self.sign_and_transmit_single_command(BATCHTYPE_WITHDRAW, withdraw, callback)
 
+        
+class Pulsenet(list):
+    def __init__(self, response_rows):
+        self.response_rows = response_rows
+        
+    def get_memos(self):
+        return [row[COLUMN_POST_DATA] for row in self.response_rows]
+
 
 class AgentExtended(AgentBasic):
     """NetVendCore - Less stable functionality. Experimental, may change at any time."""
@@ -428,6 +436,12 @@ class AgentExtended(AgentBasic):
         
         balance -= response.time_cost + response.size_cost
         return balance
+    
+    def fetch_pulsenet(self, pulse_id_list):
+        query = "SELECT * FROM pulses LEFT JOIN posts ON pulses.post_id = posts.post_id WHERE pulses.pulse_id IN (" + str(pulse_id_list)[1:-1] + ") ORDER BY tips.value DESC"
+        response = self.query(query)
+        return Pulsenet(response.rows)
+    
 
 Agent = AgentExtended
 
@@ -442,16 +456,18 @@ class SimpleService(object):
 
 
 class AdvancedService(SimpleService):
-    def call(self, request_row, args):
-        pass
+    def call(self, request_info_dict, agent_args):
+        self.func(request_info_dict, agent_args)
 
 
 class ServiceAgent(Agent):
     def __init__(self, private, url=NETVEND_URL, privtype=PRIVTYPE_SEED):
         Agent.__init__(self, private, url, privtype)
         self.simple_services = {}
+        self.advanced_services = {}
         self.lowest_fee = None
         self.refund_fee = 0
+        self.raise_error_local = False
     
     def set_refund_fee(self, refund_fee):
         self.refund_fee = refund_fee
@@ -460,9 +476,14 @@ class ServiceAgent(Agent):
         self.simple_services[name] = SimpleService(func, fee)
         if self.lowest_fee is None or fee < self.lowest_fee:
             self.lowest_fee = fee
+    
+    def register_advanced_service(self, name, func, fee):
+        self.advanced_services[name] = AdvancedService(func, fee)
+        if self.lowest_fee is None or fee < self.lowest_fee:
+            self.lowest_fee = fee
 
     def work(self, max_time_cost=None, max_size_cost=None):
-        if len(self.simple_services) == 0:
+        if len(self.simple_services) == 0 and len(self.advanced_services) == 0:
             raise RuntimeError("Need to register services before ServiceAgent can work")
         
         # Clear any existing batches
@@ -503,12 +524,28 @@ class ServiceAgent(Agent):
         refund_pulses = []
         for row in rows:
             [pulse_id, pulse_from_address, pulse_value, post_id, data] = row
+            pulse_id = int(pulse_id)
+            pulse_from_address = str(pulse_from_address)
+            pulse_value = int(pulse_value)
+            post_id = int(post_id)
+            data = str(data)
             try:
                 # Get the name and args of the function, as packed by the call method
                 [name, args] = json.loads(data[len(CALL_PREFIX):])
                 
                 # Call the service's function
-                returned = self.simple_services[name].call(args)
+                if name in self.advanced_services:
+                    request_info_dict = {'pulse_id':pulse_id,
+                                         'pulse_from_address':pulse_from_address,
+                                         'pulse_value':pulse_value,
+                                         'post_id':post_id}
+                    self.advanced_services[name].call(request_info_dict, args)
+                
+                elif name in self.simple_services:
+                    returned = self.simple_services[name].call(args)
+                
+                else:
+                    continue #name not registered as a service, skip
 
                 # We only want to post if the function actually returns a value
                 if returned is not None:
@@ -516,6 +553,9 @@ class ServiceAgent(Agent):
                     service_results.append(return_str)
             
             except Exception as e:
+                if self.raise_error_local:
+                    raise
+                    
                 # If there's an error, respond with an error response and send a refund
                 return_str = RETURN_PREFIX + str(post_id) + ":e:" + str(e)
                 service_results.append(return_str)
@@ -547,9 +587,12 @@ class ServiceAgent(Agent):
                 pulse_batch_response = responses[pulse_batch_iter]
             
             return [post_batch_response, pulse_batch_response]
+        
+        else:
+            return [None, None]
     
     def call(self, service_address, service_name, args, value, timeout = None):
-        if type(args) is not list:
+        if type(args) is not list and type(args) is not dict:
             raise TypeError("args must be a list")
         # Clear any existing batches
         self.clear_batches()
@@ -607,3 +650,25 @@ class ServiceAgent(Agent):
                 raise RuntimeError("timeout elapsed")
 
             time.sleep(elapsed_time/20)
+            
+    def post_var_json(self, name, obj):
+        try:
+            encoded = json.dumps(obj)
+        except TypeError:
+            raise ValueError('object is not json-serializable')
+        
+        prefix = "v:json:"+name+":"
+        data = prefix + encoded
+        
+        return self.post(data)
+    
+    def fetch_var_json(self, address, name):
+        prefix = "v:json:"+name+":"
+        
+        query_result = self.query("SELECT SUBSTRING(data, " + str(len(prefix)+1) + ", LENGTH(data)) FROM posts WHERE address = '" + address + "' AND data LIKE '"+prefix+"%'")
+        encoded = query_result.rows[0][0]
+        
+        try:
+            return json.loads(encoded)
+        except ValueError:
+            raise RuntimeError("error in decoding fetched object")
