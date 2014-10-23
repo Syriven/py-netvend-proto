@@ -31,7 +31,8 @@ if sys.hexversion < 0x02000000 or sys.hexversion >= 0x03000000:
     raise RuntimeError("netvend requires Python 2.x.")
 
 try:
-    import urllib, urllib2
+    import urllib
+    import urllib2
     urlopen = urllib2.urlopen
     urlencode = urllib.urlencode
 except ImportError:
@@ -53,55 +54,95 @@ BATCHTYPE_QUERY = 2
 BATCHTYPE_WITHDRAW = 3
 
 DEFAULT_QUERY_MAX_TIME_COST = 1000
-DEFAULT_QUERY_MAX_SIZE_COST = 1000
+DEFAULT_QUERY_MAX_SIZE_COST = 100000
 
 LASTREAD_PREFIX = "l:"
 RETURN_PREFIX = "r:"
 CALL_PREFIX = "c:"
 
+UNIT_POWERS = {"usat": 0, "msat": 3, "sat": 6,
+               "ubtc": 8, "mbtc": 11, "btc": 14,
+               "ubit": 8, "mbit": 11, "bit": 14,
+               "base": 0}
+
 
 def unit_pow(unit):
-    if unit.lower().startswith("usat") or unit.lower().startswith("base"):
-        return 0
-    elif unit.lower().startswith("msat"):
-        return 3
-    elif unit.lower().startswith("sat"):
-        return 6
-    elif unit.lower() == "ubtc" or unit.lower() == "ubit":
-        return 8
-    elif unit.lower() == "mbtc" or unit.lower() == "mbit":
-        return 11
-    elif unit.lower() == "btc":
-        return 14
+    """Return the unit in usats as a power of 10.
+
+    :param unit: commonly used bitcoin unit abbreviation (see UNIT_POWERS)
+    :return: unit in usats as a power of 10
+    """
+    unit = unit.lower()
+    if unit in UNIT_POWERS.keys():
+        return UNIT_POWERS[unit]
     else:
-        raise ValueError("cannot recognize unit")
+        raise ValueError("cannot recognize unit {}".format(unit))
 
 
 def convert_value(amount, from_unit, to_unit):
+    """Converts amount between units.
+
+    :param amount: amount of from_unit
+    :param from_unit: unit converted from
+    :param to_unit: unit converted to
+    :return: converted amount as float or int if is_integer()
+    """
     from_pow = unit_pow(from_unit)
     to_pow = unit_pow(to_unit)
+    delta_pow = from_pow - to_pow
+    result = amount * math.pow(10, delta_pow)
+    if result.is_integer():
+        return int(result)
+    return result
 
-    uSats = amount * math.pow(10, from_pow)
-    if to_pow == 0:
-        return int(uSats)
-    return uSats / math.pow(10, to_pow)
 
+def format_value(usats, round_decimals=3, return_list=False):
+    """Formats an amount of usats to a readable format.
 
-def format_value(uSats):
-    if uSats > math.pow(10, 13):
-        return (convert_value(uSats, 'usat', 'btc'), 'BTC')
-    elif uSats > math.pow(10, 10):
-        return (convert_value(uSats, 'usat', 'mbtc'), 'mBTC')
-    elif uSats > math.pow(10, 7):
-        return (convert_value(uSats, 'usat', 'ubtc'), 'uBTC')
-    elif uSats > math.pow(10, 5):
-        return (convert_value(uSats, 'usat', 'sat'), 'sat')
-    elif uSats > math.pow(10, 2):
-        return (convert_value(uSats, 'usat', 'msat'), 'mSat')
+    :param usats: amount in usats, use convert_value to get from other units
+    :param round_decimals: amount of decimal places to round to, False to not round
+    :param return_list: if True a tuple of amount and unit will be returned instead
+    :return: by default formatted str like "amount unit", see return_list
+    """
+    if usats > math.pow(10, 13):
+        unit = 'BTC'
+    elif usats > math.pow(10, 10):
+        unit = 'mBTC'
+    elif usats > math.pow(10, 7):
+        unit = 'uBTC'
+    elif usats > math.pow(10, 5):
+        unit = 'sat'
+    elif usats > math.pow(10, 2):
+        unit = 'msat'
     else:
-        return (convert_value(uSats, 'usat', 'usat'), 'uSat')
+        unit = 'usat'
+
+    amount = convert_value(usats, 'usat', unit)
+
+    if round_decimals is not False:
+        amount = round(amount, round_decimals)
+    if return_list:
+        return amount, unit
+    else:
+        return "{} {}".format(amount, unit)
 
 
+def convert_json_unicode_to_str(input):
+    """Converts a python object(returned from json.loads) and all of its children to UTF-8 encoded strings.
+
+    :param input: Python object returned from json.loads
+    :return: Same as input with every unicode replaced with UTF-8 encoded str
+    """
+    if isinstance(input, dict):
+        return dict([(convert_json_unicode_to_str(key), convert_json_unicode_to_str(value)) for key, value in input.iteritems()])
+    elif isinstance(input, list):
+        return [convert_json_unicode_to_str(element) for element in input]
+    elif isinstance(input, unicode):
+        return input.encode('utf-8')
+    else:
+        return input
+        
+        
 class NetvendResponseError(BaseException):
     def __init__(self, batch, error_info):  # message, batch, pos_in_batch, already_charged):
         self.batch = batch
@@ -117,39 +158,6 @@ class NetvendResponseError(BaseException):
             to_return += " (already charged " + str(self.already_charged) + " for batch)"
         to_return += ": " + self.message
         return to_return
-
-
-class AgentCore(object):
-    """Base class providing a skeleton framework. This should be stable."""
-    def __init__(self, private, url, privtype):
-        if privtype is PRIVTYPE_SEED:
-            self.private = pybitcointools.sha256(private)
-        elif privtype is PRIVTYPE_B58CHECK:
-            try:
-                self.private = pybitcointools.b58check_to_hex(private)
-            except AssertionError:
-                raise ValueError("Invalid private key")
-        elif privtype is PRIVTYPE_HEX:
-            if len(private) == 64:  # TODO: Figure out if 32 would also work (64 hex characters is 32 bytes)
-                self.private = private
-            else:
-                raise ValueError("Invalid private key")
-        else:
-            # Raise a ValueError, otherwise self.private would not be defined
-            raise ValueError("Invalid privtype")
-
-        self.address = pybitcointools.pubkey_to_address(pybitcointools.privtopub(self.private))
-        self.url = url
-    
-    def get_address(self):
-        return self.address
-    
-    def sign_data(self, data):
-        return pybitcointools.ecdsa_sign(data, self.private)
-
-    def send_to_netvend(self, arg_dict):
-        new_arg_dict = dict({'version': NETVEND_VERSION}, **arg_dict)
-        return urlopen(self.url, urlencode(new_arg_dict)).read()
 
 
 class BatchResult(object):
@@ -184,19 +192,21 @@ class PulseBatchResult(BatchResult):
         
 
 class QueryResult(object):
-    def __init__(self, result):
+    def __init__(self, result, raise_on_truncate):
         self.rows = result[0]
         self.time_cost = result[1]
         self.size_cost = result[2]
         self.truncated = bool(result[3])
+        if raise_on_truncate and self.truncated:
+            raise RuntimeError("query result has been truncated; rows are missing.")
 
 
 class QueryBatchResult(BatchResult):
-    def __init__(self, response, size):
+    def __init__(self, response, size, raise_on_truncate):
         results = response[0]
         self.results = []
         for result in results:
-            self.results.append(QueryResult(result))
+            self.results.append(QueryResult(result, raise_on_truncate))
             
         BatchResult.__init__(self, response[1], response[2], size)
     
@@ -212,7 +222,7 @@ class WithdrawBatchResult(BatchResult):
         
         
 class BatchResultList(object):
-    def __init__(self, responses, batch_types, batch_sizes):
+    def __init__(self, responses, batch_types, batch_sizes, raise_on_truncate):
         # pprint.pprint(responses)
         self.results = []
         
@@ -222,7 +232,7 @@ class BatchResultList(object):
             elif batch_types[i] is BATCHTYPE_PULSE:
                 self.results.append(PulseBatchResult(responses[i][1], batch_sizes[i]))
             elif batch_types[i] is BATCHTYPE_QUERY:
-                self.results.append(QueryBatchResult(responses[i][1], batch_sizes[i]))
+                self.results.append(QueryBatchResult(responses[i][1], batch_sizes[i], raise_on_truncate))
             elif batch_types[i] is BATCHTYPE_WITHDRAW:
                 self.results.append(WithdrawBatchResult(responses[i][1], batch_sizes[i]))
             else:
@@ -232,13 +242,56 @@ class BatchResultList(object):
         return self.results[index]
 
 
+class AgentCore(object):
+    """Base class providing a skeleton framework. This should be stable.
+
+    :param private: private key
+    :param url: url of the netvend server
+    :param privtype: private key format, see PRIVTYPE_*
+    """
+    def __init__(self, private, url, privtype):
+        if privtype is PRIVTYPE_SEED:
+            self.private = pybitcointools.sha256(private)
+        elif privtype is PRIVTYPE_B58CHECK:
+            try:
+                self.private = pybitcointools.b58check_to_hex(private)
+            except AssertionError:
+                raise ValueError("Invalid private key")
+        elif privtype is PRIVTYPE_HEX:
+            if len(private) == 64:
+                self.private = private
+            else:
+                raise ValueError("Invalid private key")
+        else:
+            # Raise a ValueError, otherwise self.private would not be defined
+            raise ValueError("Invalid privtype")
+
+        self.address = pybitcointools.pubkey_to_address(pybitcointools.privtopub(self.private))
+        self.url = url
+
+    def get_address(self):
+        return self.address
+
+    def sign_data(self, data):
+        return pybitcointools.ecdsa_sign(data, self.private)
+
+    def send_to_netvend(self, arg_dict):
+        new_arg_dict = dict({'version': NETVEND_VERSION}, **arg_dict)
+        return urlopen(self.url, urlencode(new_arg_dict)).read()
+
+
 class AgentBasic(AgentCore):
-    """Class providing increased functionality (functions for all command types and a function to make server output nicer). This should be stable."""
+    """Class providing increased functionality to AgentCore.
+
+    Adds functions for all command types and a function to make server output nicer.
+    This should be stable.
+    """
     def __init__(self, private, url=NETVEND_URL, privtype=PRIVTYPE_SEED):
         AgentCore.__init__(self, private, url, privtype)
         self.batches = []
         self.batch_types = []
         self.log_path = None
+        self.raise_on_query_truncate = True
 
     def post_process(self, data, batch_types, batch_sizes):
         try:
@@ -252,7 +305,7 @@ class AgentBasic(AgentCore):
                     pickle.dump(responses, f)
             raise NetvendResponseError(len(responses)-1, responses[-1])
         
-        return BatchResultList(responses, batch_types, batch_sizes)
+        return BatchResultList(responses, batch_types, batch_sizes, raise_on_truncate=self.raise_on_query_truncate)
     
     def set_log_path(self, log_path):
         self.log_path = log_path
@@ -417,18 +470,9 @@ class AgentBasic(AgentCore):
         
         return self.sign_and_transmit_single_command(BATCHTYPE_WITHDRAW, withdraw, callback)
 
-        
-class Pulsenet(list):
-    def __init__(self, response_rows):
-        self.response_rows = response_rows
-        
-    def get_memos(self):
-        return [row[COLUMN_POST_DATA] for row in self.response_rows]
-
 
 class AgentExtended(AgentBasic):
     """NetVendCore - Less stable functionality. Experimental, may change at any time."""
-    
     def fetch_balance(self):
         query = "SELECT balance FROM accounts WHERE address = '" + self.get_address() + "'"
         response = self.query(query)
@@ -437,34 +481,39 @@ class AgentExtended(AgentBasic):
         balance -= response.time_cost + response.size_cost
         return balance
     
-    def fetch_pulsenet(self, pulse_id_list):
-        query = "SELECT * FROM pulses LEFT JOIN posts ON pulses.post_id = posts.post_id WHERE pulses.pulse_id IN (" + str(pulse_id_list)[1:-1] + ") ORDER BY tips.value DESC"
-        response = self.query(query)
-        return Pulsenet(response.rows)
+    # def fetch_pulsenet(self, pulse_id_list):
+    #     query = "SELECT * FROM pulses LEFT JOIN posts ON pulses.post_id = posts.post_id WHERE pulses.pulse_id IN (" + str(pulse_id_list)[1:-1] + ") ORDER BY tips.value DESC"
+    #     response = self.query(query)
+    #     return Pulsenet(response.rows)
     
 
 Agent = AgentExtended
 
 
-class SimpleService(object):
-    def __init__(self, func, fee):
+class Service(object):
+    """Service class used and usually created by ServiceAgent
+
+    :param func: function to be called
+    :param fee: fee of service
+    :param advanced: if False: func(*args), else: func(request_info_dict, args), see call
+    """
+    def __init__(self, func, fee, advanced=False):
         self.func = func
         self.fee = fee
-    
-    def call(self, args):
-        return self.func(*args)
+        self.is_advanced = advanced
 
-
-class AdvancedService(SimpleService):
-    def call(self, request_info_dict, agent_args):
-        self.func(request_info_dict, agent_args)
+    def call(self, args, request_info_dict):
+        if self.is_advanced:
+            return self.func(request_info_dict, args)
+        else:
+            return self.func(*args)
 
 
 class ServiceAgent(Agent):
+    """Agent used to call and serve services."""
     def __init__(self, private, url=NETVEND_URL, privtype=PRIVTYPE_SEED):
-        Agent.__init__(self, private, url, privtype)
-        self.simple_services = {}
-        self.advanced_services = {}
+        super(ServiceAgent, self).__init__(self, private, url, privtype)
+        self.services = {}
         self.lowest_fee = None
         self.refund_fee = 0
         self.raise_error_local = False
@@ -472,18 +521,13 @@ class ServiceAgent(Agent):
     def set_refund_fee(self, refund_fee):
         self.refund_fee = refund_fee
 
-    def register_simple_service(self, name, func, fee):
-        self.simple_services[name] = SimpleService(func, fee)
-        if self.lowest_fee is None or fee < self.lowest_fee:
-            self.lowest_fee = fee
-    
-    def register_advanced_service(self, name, func, fee):
-        self.advanced_services[name] = AdvancedService(func, fee)
+    def register_service(self, name, func, fee, is_advanced=False):
+        self.services[name] = Service(func, fee, is_advanced)
         if self.lowest_fee is None or fee < self.lowest_fee:
             self.lowest_fee = fee
 
     def work(self, max_time_cost=None, max_size_cost=None):
-        if len(self.simple_services) == 0 and len(self.advanced_services) == 0:
+        if not self.services:  # len(self.services) == 0
             raise RuntimeError("Need to register services before ServiceAgent can work")
         
         # Clear any existing batches
@@ -531,21 +575,20 @@ class ServiceAgent(Agent):
             data = str(data)
             try:
                 # Get the name and args of the function, as packed by the call method
-                [name, args] = json.loads(data[len(CALL_PREFIX):])
-                
+                [name, args] = convert_json_unicode_to_str(json.loads(data[len(CALL_PREFIX):]))
+
                 # Call the service's function
-                if name in self.advanced_services:
-                    request_info_dict = {'pulse_id':pulse_id,
-                                         'pulse_from_address':pulse_from_address,
-                                         'pulse_value':pulse_value,
-                                         'post_id':post_id}
-                    self.advanced_services[name].call(request_info_dict, args)
-                
-                elif name in self.simple_services:
-                    returned = self.simple_services[name].call(args)
-                
+                if name in self.services:
+                    if self.services[name].is_advanced:
+                        request_info_dict = {'pulse_id': pulse_id,
+                                             'pulse_from_address': pulse_from_address,
+                                             'pulse_value': pulse_value,
+                                             'post_id': post_id}
+                        returned = self.services[name].call(args, request_info_dict)
+                    else:
+                        returned = self.services[name].call(args)
                 else:
-                    continue #name not registered as a service, skip
+                    continue  # Name not registered as a service, skip
 
                 # We only want to post if the function actually returns a value
                 if returned is not None:
@@ -591,7 +634,7 @@ class ServiceAgent(Agent):
         else:
             return [None, None]
     
-    def call(self, service_address, service_name, args, value, timeout = None):
+    def call(self, service_address, service_name, args, value, timeout=None, wait_for_response=True, convert_unicode_to_str=True):
         if type(args) is not list and type(args) is not dict:
             raise TypeError("args must be a list")
         # Clear any existing batches
@@ -602,10 +645,14 @@ class ServiceAgent(Agent):
         post_batch_iter = self.add_post_batch([call_str])
 
         # Then use a pulse to alert service_address of our call post
-        tip_batch_iter = self.add_pulse_batch([[service_address, value, 0, post_batch_iter]])
+        pulse_batch_iter = self.add_pulse_batch([[service_address, value, 0, post_batch_iter]])
 
         # Send the query, post, and tip batches
         response_list = self.transmit_batches()
+        
+        if not wait_for_response:
+            #return information about pulse and post results instead
+            return response_list
         
         # Get the post_id of our request, so later we can query netvend for responses--posts that reference this post_id
         post_id = response_list[post_batch_iter][0]
@@ -643,7 +690,10 @@ class ServiceAgent(Agent):
                     error = data.split(':')[3]
                     raise RuntimeError("Error in serving script: " + error)
                     
-                return json.loads(data[len(RETURN_PREFIX)+len(str(post_id)+":"):])
+                decoded = json.loads(data[len(RETURN_PREFIX)+len(str(post_id)+":"):])
+                if convert_unicode_to_str:
+                    decoded = convert_json_unicode_to_str(decoded)
+                return decoded
 
             elapsed_time = time.time() - start_time
             if timeout is not None and elapsed_time > timeout:
@@ -662,13 +712,20 @@ class ServiceAgent(Agent):
         
         return self.post(data)
     
-    def fetch_var_json(self, address, name):
+    def fetch_var_json(self, address, name, max_size_cost=DEFAULT_QUERY_MAX_SIZE_COST, convert_unicode_to_str=True):
         prefix = "v:json:"+name+":"
         
-        query_result = self.query("SELECT SUBSTRING(data, " + str(len(prefix)+1) + ", LENGTH(data)) FROM posts WHERE address = '" + address + "' AND data LIKE '"+prefix+"%'")
+        query_result = self.query("SELECT SUBSTRING(data, " + str(len(prefix)+1) + ", LENGTH(data)) FROM posts WHERE address = '" + address + "' AND data LIKE '"+prefix+"%' ORDER BY post_id DESC LIMIT 1", max_size_cost=max_size_cost)
+        if len(query_result.rows) == 0:
+            return None
         encoded = query_result.rows[0][0]
         
         try:
-            return json.loads(encoded)
+            decoded = json.loads(encoded)
         except ValueError:
             raise RuntimeError("error in decoding fetched object")
+        
+        if convert_unicode_to_str:
+            decoded = convert_json_unicode_to_str(decoded)
+            
+        return decoded
