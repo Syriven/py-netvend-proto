@@ -60,9 +60,9 @@ LASTREAD_PREFIX = "l:"
 RETURN_PREFIX = "r:"
 CALL_PREFIX = "c:"
 
-UNIT_POWERS = {"usat": 0, "msat": 3, "sat": 6,
-               "ubtc": 8, "mbtc": 11, "btc": 14,
-               "ubit": 8, "mbit": 11, "bit": 14,
+UNIT_POWERS = {"usat": 0, "msat": 3, "sat": 6, "ksat": 9, "Msat": 12,
+               "ubtc": 8, "mbtc": 11, "btc": 14, "kbtc": 17, "Mbtc": 20,
+               "ubit": 2, "mbit": 5, "bit": 8, "kbit": 11, "Mbit": 14,
                "base": 0}
 
 
@@ -72,8 +72,9 @@ def unit_pow(unit):
     :param unit: commonly used bitcoin unit abbreviation (see UNIT_POWERS)
     :return: unit in usats as a power of 10
     """
-    unit = unit.lower()
     if unit in UNIT_POWERS.keys():
+        return UNIT_POWERS[unit]
+    elif unit.lower() in UNIT_POWERS.keys():
         return UNIT_POWERS[unit]
     else:
         raise ValueError("cannot recognize unit {0}".format(unit))
