@@ -76,11 +76,11 @@ def unit_pow(unit):
     if unit in UNIT_POWERS.keys():
         return UNIT_POWERS[unit]
     else:
-        raise ValueError("cannot recognize unit {}".format(unit))
+        raise ValueError("cannot recognize unit {0}".format(unit))
 
 
-def convert_value(amount, from_unit, to_unit):
-    """Converts amount between units.
+def convert_value(amount, from_unit, to_unit="base"):
+    """Converts amount between units, by default to base units.
 
     :param amount: amount of from_unit
     :param from_unit: unit converted from
@@ -124,7 +124,7 @@ def format_value(usats, round_decimals=3, return_list=False):
     if return_list:
         return amount, unit
     else:
-        return "{} {}".format(amount, unit)
+        return "{0} {1}".format(amount, unit)
 
 
 def convert_json_unicode_to_str(input):
@@ -171,7 +171,7 @@ class PostBatchResult(BatchResult):
     def __init__(self, response, size):
         self.first_post_id = response[0]
         
-        BatchResult.__init__(self, response[1], response[2], size)
+        super(PostBatchResult, self).__init__(response[1], response[2], size)
     
     def __getitem__(self, index):
         if index > self.size:
@@ -183,7 +183,7 @@ class PulseBatchResult(BatchResult):
     def __init__(self, response, size):
         self.first_pulse_id = response[0]
         
-        BatchResult.__init__(self, response[1], response[2], size)
+        super(PulseBatchResult, self).__init__(response[1], response[2], size)
     
     def __getitem__(self, index):
         if index > self.size:
@@ -207,8 +207,8 @@ class QueryBatchResult(BatchResult):
         self.results = []
         for result in results:
             self.results.append(QueryResult(result, raise_on_truncate))
-            
-        BatchResult.__init__(self, response[1], response[2], size)
+
+        super(QueryBatchResult, self).__init__(response[1], response[2], size)
     
     def __getitem__(self, index):
         if index > self.size:
@@ -218,7 +218,7 @@ class QueryBatchResult(BatchResult):
         
 class WithdrawBatchResult(BatchResult):
     def __init__(self, response, size):
-        BatchResult.__init__(self, response[1], response[2], size)
+        super(WithdrawBatchResult, self).__init__(response[1], response[2], size)
         
         
 class BatchResultList(object):
@@ -287,7 +287,7 @@ class AgentBasic(AgentCore):
     This should be stable.
     """
     def __init__(self, private, url=NETVEND_URL, privtype=PRIVTYPE_SEED):
-        AgentCore.__init__(self, private, url, privtype)
+        super(AgentBasic, self).__init__(private, url, privtype)
         self.batches = []
         self.batch_types = []
         self.log_path = None
@@ -502,8 +502,10 @@ class Service(object):
         self.fee = fee
         self.is_advanced = advanced
 
-    def call(self, args, request_info_dict):
+    def call(self, args, request_info_dict=None):
         if self.is_advanced:
+            if request_info_dict is None:
+                raise ValueError("must pass request_info_dict for advanced service")
             return self.func(request_info_dict, args)
         else:
             return self.func(*args)
@@ -512,7 +514,7 @@ class Service(object):
 class ServiceAgent(Agent):
     """Agent used to call and serve services."""
     def __init__(self, private, url=NETVEND_URL, privtype=PRIVTYPE_SEED):
-        super(ServiceAgent, self).__init__(self, private, url, privtype)
+        super(ServiceAgent, self).__init__(private, url, privtype)
         self.services = {}
         self.lowest_fee = None
         self.refund_fee = 0
